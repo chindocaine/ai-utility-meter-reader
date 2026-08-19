@@ -1,0 +1,58 @@
+body {
+  font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+  max-width: 900px;
+  margin: 20px auto;
+  padding: 0 16px;
+  color: #1a1a1a;
+  background: #f7f7f8;
+}
+h1 { margin-bottom: 4px; }
+.card {
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 10px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+.card h2 { margin-top: 0; font-size: 1.1em; }
+input, select, button {
+  font-size: 0.95em;
+  padding: 5px 8px;
+  margin: 4px 2px;
+}
+button {
+  cursor: pointer;
+  background: #2f6fed;
+  color: white;
+  border: none;
+  border-radius: 6px;
+}
+button:hover { background: #2456c0; }
+label { display: inline-block; margin: 6px 0; }
+code {
+  background: #eee;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+#canvas {
+  border: 1px solid #ccc;
+  max-width: 100%;
+  cursor: crosshair;
+}
+#statusBox {
+  font-family: monospace;
+  white-space: pre-wrap;
+  background: #111;
+  color: #adf;
+  padding: 10px;
+  border-radius: 6px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th, td {
+  text-align: left;
+  padding: 8px 6px;
+  border-bottom: 1px solid #eee;
+}

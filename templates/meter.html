@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{ meter_name }} - Utility Meter Reader</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-meter-id="{{ meter_id }}">
+<p><a href="/">&larr; All meters</a></p>
+<h1 id="meterTitle">{{ meter_name }}</h1>
+
+<section class="card">
+  <h2>Meter name</h2>
+  <label>Name: <input type="text" id="meterName" style="width:250px"></label>
+  <button onclick="saveMeterName()">Save</button>
+  <button onclick="deleteMeter()" style="float:right;">Delete this meter</button>
+</section>
+
+<section class="card">
+  <h2>1. Reference image</h2>
+  <p>Upload a clean, well-lit photo of the meter. This defines the coordinate space for every digit ROI below.</p>
+  <input type="file" id="refFile" accept="image/*">
+  <button onclick="uploadReference()">Upload reference</button>
+  <div id="refStatus"></div>
+
+  <h3 style="margin-top:14px;">Straighten (optional)</h3>
+  <p>Preview a rotation to correct camera skew before drawing ROIs - it's much easier to line
+     up horizontal digit boxes on a de-skewed image. Nothing is saved until you click
+     "Apply rotation", which bakes it into the reference image and clears any existing ROI
+     boxes (their old coordinates would no longer line up).</p>
+  <canvas id="rotateCanvas" style="border:1px solid #ccc; max-width:100%;"></canvas>
+  <div>
+    <button onclick="nudgeRotation(-90)">-90&deg;</button>
+    <button onclick="nudgeRotation(-1)">-1&deg;</button>
+    <button onclick="nudgeRotation(-0.1)">-0.1&deg;</button>
+    <span id="rotationValue">0&deg;</span>
+    <button onclick="nudgeRotation(0.1)">+0.1&deg;</button>
+    <button onclick="nudgeRotation(1)">+1&deg;</button>
+    <button onclick="nudgeRotation(90)">+90&deg;</button>
+    <label style="margin-left:12px;"><input type="checkbox" id="gridRotate" onchange="drawRotatePreview()"> Show alignment grid</label>
+  </div>
+  <button onclick="applyRotation()">Apply rotation</button>
+  <button onclick="resetRotationPreview()">Reset preview</button>
+</section>
+
+<section class="card">
+  <h2>2. Digit model (.tflite)</h2>
+  <p>Pick one of the models uploaded on the <a href="/">meter overview page</a> (models are
+     shared across all meters - upload new ones there).</p>
+  <label>Model:
+    <select id="modelFile"><option value="">(none uploaded yet)</option></select>
+  </label>
+  <label>Output classes represent:
+    <select id="numClasses">
+      <option value="10">10 plain digits (class10 model)</option>
+      <option value="11">11 classes (class11 model, incl. uncertain)</option>
+      <option value="100">100 sub-digit steps (class100 model)</option>
+      <option value="2">Continuous regression, 2-output atan2 (dig-cont model)</option>
+    </select>
+  </label>
+  <button onclick="saveModelSelection()">Save</button>
+  <div id="modelStatus"></div>
+</section>
+
+<section class="card">
+  <h2>3. Draw digit ROIs</h2>
+  <p>Click and drag a box over each digit window, left to right, in the same order they appear on the meter.</p>
+  <canvas id="canvas"></canvas>
+  <div>
+    <button onclick="undoRoi()">Undo last box</button>
+    <button onclick="clearRois()">Clear all</button>
+    <button onclick="saveRois()">Save ROIs</button>
+    <span id="roiCount"></span>
+    <label style="margin-left:12px;"><input type="checkbox" id="gridRoi" onchange="redraw()"> Show alignment grid</label>
+  </div>
+  <label>Number of trailing digits after the decimal point:
+    <input type="number" id="decimalDigits" min="0" value="3" style="width:4em">
+  </label>
+</section>
+
+<section class="card">
+  <h2>4. Alignment settings</h2>
+  <label>Method:
+    <select id="alignMethod">
+      <option value="orb">Feature-based (ORB) - robust to shift/rotation/glare</option>
+      <option value="phase">Phase correlation - cheaper, shift-only</option>
+    </select>
+  </label>
+  <label>Minimum matched features required: <input type="number" id="minMatch" value="12" style="width:4em"></label>
+  <button onclick="saveSettings()">Save settings</button>
+</section>
+
+<section class="card">
+  <h2>5. Test</h2>
+  <p>Try the full pipeline against a photo (or the most recently received image).</p>
+  <input type="file" id="testFile" accept="image/*">
+  <label><input type="checkbox" id="testDebug"> Show debug details (per-digit model output + crops)</label>
+  <button onclick="runTest()">Run test</button>
+  <div id="testResult"></div>
+  <img id="testImage" style="max-width:100%; display:none; margin-top:10px;">
+  <div id="testDebugPanel" style="display:none; margin-top:10px;"></div>
+</section>
+
+<section class="card">
+  <h2>6. Automatic capture (optional)</h2>
+  <p>If the meter's ESP32 already exposes a raw snapshot URL (e.g. AI-on-the-edge's <code>/img_tmp/raw.jpg</code>),
+     point this service at it and it will pull + process a new image on a schedule - no ESP32 changes required.
+     Otherwise, POST a JPEG to this meter's <code>/api/meters/&lt;id&gt;/image</code> endpoint from any script/cron job.</p>
+  <label>Snapshot URL: <input type="text" id="espUrl" style="width:400px" placeholder="http://192.168.1.50/img_tmp/raw.jpg"></label><br>
+  <label>Poll interval (seconds): <input type="number" id="pollInterval" value="300" style="width:6em"></label>
+  <button onclick="saveEsp()">Save</button>
+</section>
+
+<section class="card">
+  <h2>7. Outlier protection</h2>
+  <p>Applied to every accepted reading (test runs show the effect but don't write history) -
+     a rejected reading keeps the previous value/timestamp in place and surfaces an error
+     instead of writing bad data to history, Home Assistant or MQTT.</p>
+  <label><input type="checkbox" id="allowDigitFallback"> If a digit can't be read, reuse that
+    position's digit from the last accepted reading instead of failing the whole reading
+    (shown with a <code>*</code> and magenta box in the annotated image)</label><br>
+  <label><input type="checkbox" id="rejectDecreasing"> Reject a reading lower than the last accepted one</label><br>
+  <label>Max allowed increase per reading (0 = no limit):
+    <input type="number" id="maxIncrease" min="0" step="any" value="0" style="width:8em">
+  </label>
+  <button onclick="saveRobustness()">Save</button>
+</section>
+
+<section class="card">
+  <h2>8. MQTT (optional)</h2>
+  <label>Host: <input type="text" id="mqttHost" style="width:200px"></label>
+  <label>Port: <input type="number" id="mqttPort" value="1883" style="width:6em"></label>
+  <label>Topic: <input type="text" id="mqttTopic" style="width:200px"></label><br>
+  <label>Username: <input type="text" id="mqttUser" style="width:150px"></label>
+  <label>Password: <input type="password" id="mqttPass" style="width:150px"></label>
+  <button onclick="saveMqtt()">Save</button>
+</section>
+
+<section class="card">
+  <h2>Status</h2>
+  <div id="statusBox">loading...</div>
+  <button onclick="refreshStatus()">Refresh</button>
+</section>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+# Runtime state (reference images, models, meter configs/history) - never commit
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# IDEs / editors
+.idea/
+.vscode/
+*.iml
+
+# OS cruft
+.DS_Store
+Thumbs.db
