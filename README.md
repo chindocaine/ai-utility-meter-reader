@@ -126,8 +126,7 @@ each meter a distinct MQTT topic.
 - All state lives under `./data`: uploaded `.tflite` models are shared in
   `./data/models`, and each meter has its own directory under `./data/meters/<id>/`
   holding its config, reference image, and history - so it all survives container
-  rebuilds/updates. Deployments upgrading from the single-meter version of this
-  service automatically migrate their existing setup into a first meter on startup.
+  rebuilds/updates.
 - `GET /api/meters/<meter-id>/history` returns a meter's last 200 readings as JSON if
   you want a quick sanity check or want to feed it elsewhere.
 
@@ -150,3 +149,15 @@ each meter a distinct MQTT topic.
 | `/api/meters/<id>/last` | GET | Latest reading, for Home Assistant |
 | `/api/meters/<id>/last/image` | GET | Latest annotated debug image |
 | `/api/meters/<id>/history` | GET | Last 200 readings |
+
+## Acknowledgements
+
+This project is very much inspired by
+[jomjol/AI-on-the-edge-device](https://github.com/jomjol/AI-on-the-edge-device), which I
+like a lot - it's a genuinely impressive piece of engineering. But I was never impressed
+by the ESP32's performance actually running it: recognition always felt slow and
+sluggish on-device. That's why I wanted to outsource the heavy lifting to an external
+service running on more powerful hardware instead. That also let me swap in a better
+image-alignment algorithm (feature-based homography instead of marker-based alignment),
+and the whole capture-to-reading pipeline now takes a fraction of a second instead of
+the better part of a minute.

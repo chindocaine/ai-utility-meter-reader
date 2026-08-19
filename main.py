@@ -46,13 +46,6 @@ MODELS_DIR.mkdir(parents=True, exist_ok=True)
 METERS_DIR = DATA_DIR / "meters"
 METERS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Legacy single-meter layout, from before multi-meter support existed.
-LEGACY_CONFIG_PATH = DATA_DIR / "config.json"
-LEGACY_REFERENCE_PATH = DATA_DIR / "reference.jpg"
-LEGACY_LAST_RAW_PATH = DATA_DIR / "last_raw.jpg"
-LEGACY_LAST_ANNOTATED_PATH = DATA_DIR / "last_annotated.jpg"
-LEGACY_HISTORY_PATH = DATA_DIR / "history.jsonl"
-
 DEFAULT_METER_CONFIG = {
     "name": "Meter",
     "rois": [],                 # list of {x,y,w,h} in reference-image pixel coords, left -> right
@@ -155,38 +148,6 @@ def delete_meter(meter_id):
     with _lock:
         _last_results.pop(meter_id, None)
         _next_poll_at.pop(meter_id, None)
-
-
-def migrate_legacy_single_meter():
-    """One-time upgrade path: services deployed before multi-meter support
-    stored a single meter's state directly under DATA_DIR. Fold that into a
-    proper meter instance instead of silently losing the existing setup."""
-    if not LEGACY_CONFIG_PATH.exists():
-        return
-    if list_meters():
-        return  # already migrated (or meters already exist) - don't duplicate
-
-    with open(LEGACY_CONFIG_PATH, "r") as f:
-        legacy_cfg = json.load(f)
-    cfg = dict(DEFAULT_METER_CONFIG)
-    cfg.update(legacy_cfg)
-    cfg.setdefault("name", "Meter 1")
-
-    meter_id = uuid.uuid4().hex[:12]
-    meter_dir(meter_id).mkdir(parents=True, exist_ok=True)
-    save_meter_config(meter_id, cfg)
-
-    for src, dst_name in (
-        (LEGACY_REFERENCE_PATH, "reference.jpg"),
-        (LEGACY_LAST_RAW_PATH, "last_raw.jpg"),
-        (LEGACY_LAST_ANNOTATED_PATH, "last_annotated.jpg"),
-        (LEGACY_HISTORY_PATH, "history.jsonl"),
-    ):
-        if src.exists():
-            shutil.move(str(src), str(meter_dir(meter_id) / dst_name))
-    LEGACY_CONFIG_PATH.rename(meter_dir(meter_id) / "legacy_config.json.bak")
-
-    log.info("Migrated legacy single-meter setup into meter %s (%s)", meter_id, cfg["name"])
 
 
 # ---------------------------------------------------------------------------
@@ -906,7 +867,6 @@ def health():
 
 
 if __name__ == "__main__":
-    migrate_legacy_single_meter()
     t = threading.Thread(target=poller_loop, daemon=True)
     t.start()
     app.run(host="0.0.0.0", port=8080)
