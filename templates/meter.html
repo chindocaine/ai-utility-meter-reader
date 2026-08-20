@@ -152,10 +152,14 @@
 
 <section class="card">
   <h2>9. History</h2>
-  <p>Accepted readings over time (most recent 200).</p>
+  <p>Last processed image (with detected digit boxes annotated):</p>
+  <img id="lastImage" style="max-width:100%; display:none; border:1px solid #ccc;">
+  <div id="lastImageStatus"></div>
+
+  <p style="margin-top:14px;">Accepted readings over time (most recent 200).</p>
   <canvas id="historyCanvas" style="border:1px solid #ccc; max-width:100%;"></canvas>
   <div id="historyTooltip" style="font-family: monospace; min-height: 1.2em;"></div>
-  <button onclick="loadHistoryChart()">Refresh</button>
+  <button onclick="loadLastImage(); loadHistoryChart();">Refresh</button>
 </section>
 
 <section class="card">

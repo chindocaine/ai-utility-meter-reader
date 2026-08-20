@@ -464,6 +464,24 @@ async function runTest() {
   }
 }
 
+// --- Last processed image ---
+
+async function loadLastImage() {
+  const lastImage = document.getElementById("lastImage");
+  const status = document.getElementById("lastImageStatus");
+  const res = await fetch(`${API}/last/image?ts=` + Date.now());
+  if (!res.ok) {
+    lastImage.style.display = "none";
+    status.textContent = "No processed image yet.";
+    return;
+  }
+  const blobUrl = URL.createObjectURL(await res.blob());
+  lastImage.onload = () => URL.revokeObjectURL(blobUrl);
+  lastImage.src = blobUrl;
+  lastImage.style.display = "block";
+  status.textContent = "";
+}
+
 // --- History chart ---
 
 let historyData = [];
@@ -591,5 +609,6 @@ window.onload = async () => {
   loadReferenceIntoCanvas();
   loadRotatePreview();
   loadPerspectivePreview();
+  loadLastImage();
   loadHistoryChart();
 };
