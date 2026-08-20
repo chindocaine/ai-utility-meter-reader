@@ -122,6 +122,7 @@ async function uploadReference() {
   document.getElementById("refStatus").textContent = j.ok ? "Uploaded." : JSON.stringify(j);
   loadReferenceIntoCanvas();
   loadRotatePreview();
+  loadPerspectivePreview();
 }
 
 // --- Reference image rotation preview (client-side only until "Apply") ---
@@ -202,7 +203,126 @@ async function applyRotation() {
   rois = [];
   loadReferenceIntoCanvas();
   loadRotatePreview();
+  loadPerspectivePreview();
   alert("Rotation applied." + (j.cleared_rois ? " ROI boxes were cleared - redraw them below." : ""));
+}
+
+// --- Reference image perspective correction (client-side trace, server-side warp) ---
+
+let perspRefImg = new Image();
+let perspPoints = []; // up to 4 {x,y} in native reference-image pixel coords, TL->TR->BR->BL
+const perspCanvas = document.getElementById("perspCanvas");
+const perspCtx = perspCanvas.getContext("2d");
+let perspScale = 1;
+const PERSP_CORNER_NAMES = ["top-left", "top-right", "bottom-right", "bottom-left"];
+
+function loadPerspectivePreview() {
+  perspRefImg = new Image();
+  perspRefImg.onload = () => {
+    perspPoints = [];
+    const maxW = 860;
+    perspScale = perspRefImg.width > maxW ? maxW / perspRefImg.width : 1;
+    perspCanvas.width = perspRefImg.width * perspScale;
+    perspCanvas.height = perspRefImg.height * perspScale;
+    drawPerspectivePreview();
+  };
+  perspRefImg.src = `${API}/reference?ts=` + Date.now();
+}
+
+function drawPerspectivePreview() {
+  if (!perspRefImg.width) return;
+  perspCtx.clearRect(0, 0, perspCanvas.width, perspCanvas.height);
+  perspCtx.drawImage(perspRefImg, 0, 0, perspCanvas.width, perspCanvas.height);
+
+  perspCtx.strokeStyle = "#e63946";
+  perspCtx.fillStyle = "#e63946";
+  perspCtx.lineWidth = 2;
+  perspCtx.font = "14px monospace";
+  perspPoints.forEach((p, i) => {
+    const x = p.x * perspScale, y = p.y * perspScale;
+    perspCtx.beginPath();
+    perspCtx.arc(x, y, 5, 0, Math.PI * 2);
+    perspCtx.fill();
+    perspCtx.fillText(i + 1, x + 8, y - 8);
+  });
+  if (perspPoints.length > 1) {
+    perspCtx.beginPath();
+    perspPoints.forEach((p, i) => {
+      const x = p.x * perspScale, y = p.y * perspScale;
+      if (i === 0) perspCtx.moveTo(x, y); else perspCtx.lineTo(x, y);
+    });
+    if (perspPoints.length === 4) perspCtx.closePath();
+    perspCtx.stroke();
+  }
+  document.getElementById("perspStatus").textContent =
+    perspPoints.length < 4
+      ? `Click-drag to place the ${PERSP_CORNER_NAMES[perspPoints.length]} corner of the display (${perspPoints.length}/4)`
+      : "4 corners traced - drag any corner to adjust, or click Apply to rectify.";
+}
+
+let perspDragIndex = -1;
+
+function perspEventToNativeXY(e) {
+  const rect = perspCanvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - rect.left) / perspScale,
+    y: (e.clientY - rect.top) / perspScale,
+  };
+}
+
+perspCanvas.addEventListener("mousedown", (e) => {
+  const { x, y } = perspEventToNativeXY(e);
+  const grabRadius = 10 / perspScale;
+  let nearest = -1, nearestDist = grabRadius;
+  perspPoints.forEach((p, i) => {
+    const d = Math.hypot(p.x - x, p.y - y);
+    if (d < nearestDist) { nearest = i; nearestDist = d; }
+  });
+  if (nearest >= 0) {
+    perspDragIndex = nearest;
+  } else if (perspPoints.length < 4) {
+    perspPoints.push({ x: Math.round(x), y: Math.round(y) });
+    perspDragIndex = perspPoints.length - 1;
+  } else {
+    return;
+  }
+  drawPerspectivePreview();
+});
+
+perspCanvas.addEventListener("mousemove", (e) => {
+  if (perspDragIndex < 0) return;
+  const { x, y } = perspEventToNativeXY(e);
+  perspPoints[perspDragIndex] = { x: Math.round(x), y: Math.round(y) };
+  drawPerspectivePreview();
+});
+
+window.addEventListener("mouseup", () => { perspDragIndex = -1; });
+
+function resetPerspectivePreview() {
+  perspPoints = [];
+  drawPerspectivePreview();
+}
+
+async function applyPerspective() {
+  if (perspPoints.length !== 4) return alert("Trace all 4 corners first");
+  if (rois.length && !confirm(
+    "Applying this perspective correction will clear the existing ROI boxes, since their " +
+    "coordinates would no longer line up. Continue?"
+  )) return;
+
+  const res = await fetch(`${API}/reference/perspective`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ corners: perspPoints }),
+  });
+  const j = await res.json();
+  if (j.error) return alert(j.error);
+
+  rois = [];
+  loadReferenceIntoCanvas();
+  loadRotatePreview();
+  loadPerspectivePreview();
+  alert("Perspective corrected." + (j.cleared_rois ? " ROI boxes were cleared - redraw them below." : ""));
 }
 
 async function loadModelOptions(selected) {
@@ -344,6 +464,100 @@ async function runTest() {
   }
 }
 
+// --- History chart ---
+
+let historyData = [];
+let historyPlot = null;
+const historyCanvas = document.getElementById("historyCanvas");
+const historyCtx = historyCanvas.getContext("2d");
+
+async function loadHistoryChart() {
+  historyData = await (await fetch(`${API}/history`)).json();
+  drawHistoryChart();
+}
+
+function drawHistoryChart() {
+  const w = Math.min(860, historyCanvas.parentElement.clientWidth || 860);
+  const h = 260;
+  historyCanvas.width = w;
+  historyCanvas.height = h;
+  historyCtx.clearRect(0, 0, w, h);
+
+  if (!historyData.length) {
+    historyPlot = null;
+    historyCtx.fillStyle = "#777";
+    historyCtx.font = "14px sans-serif";
+    historyCtx.fillText("No history yet.", 10, 20);
+    return;
+  }
+
+  const pad = { left: 65, right: 15, top: 15, bottom: 30 };
+  const plotW = w - pad.left - pad.right;
+  const plotH = h - pad.top - pad.bottom;
+
+  const points = historyData.map((e) => ({ t: new Date(e.timestamp).getTime(), v: e.value, entry: e }));
+  let minV = Math.min(...points.map((p) => p.v));
+  let maxV = Math.max(...points.map((p) => p.v));
+  if (minV === maxV) { minV -= 1; maxV += 1; }
+  const minT = points[0].t;
+  const maxT = points[points.length - 1].t;
+  const spanT = Math.max(1, maxT - minT);
+
+  const xOf = (t) => pad.left + ((t - minT) / spanT) * plotW;
+  const yOf = (v) => pad.top + (1 - (v - minV) / (maxV - minV)) * plotH;
+
+  historyCtx.strokeStyle = "#ccc";
+  historyCtx.lineWidth = 1;
+  historyCtx.strokeRect(pad.left, pad.top, plotW, plotH);
+
+  historyCtx.fillStyle = "#555";
+  historyCtx.font = "12px monospace";
+  historyCtx.textAlign = "right";
+  historyCtx.fillText(maxV.toFixed(3), pad.left - 6, pad.top + 4);
+  historyCtx.fillText(minV.toFixed(3), pad.left - 6, pad.top + plotH);
+
+  historyCtx.textAlign = "left";
+  historyCtx.fillText(new Date(minT).toLocaleString(), pad.left, h - 8);
+  historyCtx.textAlign = "right";
+  historyCtx.fillText(new Date(maxT).toLocaleString(), w - pad.right, h - 8);
+
+  historyCtx.strokeStyle = "#2f6fed";
+  historyCtx.lineWidth = 2;
+  historyCtx.beginPath();
+  points.forEach((p, i) => {
+    const x = xOf(p.t), y = yOf(p.v);
+    if (i === 0) historyCtx.moveTo(x, y); else historyCtx.lineTo(x, y);
+  });
+  historyCtx.stroke();
+
+  historyCtx.fillStyle = "#2f6fed";
+  points.forEach((p) => {
+    historyCtx.beginPath();
+    historyCtx.arc(xOf(p.t), yOf(p.v), 2.5, 0, Math.PI * 2);
+    historyCtx.fill();
+  });
+
+  historyPlot = { pad, plotW, plotH, minT, maxT, spanT, points };
+}
+
+historyCanvas.addEventListener("mousemove", (e) => {
+  if (!historyPlot) return;
+  const rect = historyCanvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const t = historyPlot.minT + ((mx - historyPlot.pad.left) / historyPlot.plotW) * historyPlot.spanT;
+  let nearest = historyPlot.points[0], nearestDist = Infinity;
+  historyPlot.points.forEach((p) => {
+    const d = Math.abs(p.t - t);
+    if (d < nearestDist) { nearestDist = d; nearest = p; }
+  });
+  document.getElementById("historyTooltip").textContent =
+    `${new Date(nearest.entry.timestamp).toLocaleString()} - value: ${nearest.entry.value}`;
+});
+
+historyCanvas.addEventListener("mouseleave", () => {
+  document.getElementById("historyTooltip").textContent = "";
+});
+
 async function refreshStatus() {
   const cfg = await (await fetch(`${API}/config`)).json();
   const last = await (await fetch(`${API}/last`)).json();
@@ -376,4 +590,6 @@ window.onload = async () => {
   await refreshStatus();
   loadReferenceIntoCanvas();
   loadRotatePreview();
+  loadPerspectivePreview();
+  loadHistoryChart();
 };

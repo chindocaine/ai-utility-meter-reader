@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 import cv2
 import numpy as np
 from flask import Flask, request, jsonify, send_file, render_template
+from waitress import serve
 
 try:
     from tflite_runtime.interpreter import Interpreter
@@ -709,6 +710,78 @@ def api_rotate_reference(meter_id):
     return jsonify({"ok": True, "cleared_rois": cleared_rois})
 
 
+@app.route("/api/meters/<meter_id>/reference/perspective", methods=["POST"])
+def api_perspective_reference(meter_id):
+    """Correct perspective in the saved reference image: warp the *whole*
+    image with the homography that turns a user-traced quadrilateral (the
+    meter display's outline) into an axis-aligned rectangle at the same
+    position, expanding the canvas so nothing outside the quad is clipped
+    (mirrors how /reference/rotate expands its canvas). Live photos are
+    always registered against the reference via ORB feature homography (see
+    align_image), which already warps arbitrary perspective onto the
+    reference's own pixel grid - so correcting the reference once is enough,
+    every future capture is rectified for free by that same warpPerspective
+    call. Existing ROIs are cleared since their pixel coordinates no longer
+    apply once the reference's pixel grid has changed."""
+    if not meter_exists(meter_id):
+        return jsonify({"error": "no such meter"}), 404
+    ref_path = reference_path(meter_id)
+    if not ref_path.exists():
+        return jsonify({"error": "no reference image set"}), 400
+
+    body = request.get_json(force=True) or {}
+    corners = body.get("corners")
+    if not isinstance(corners, list) or len(corners) != 4:
+        return jsonify({"error": "corners must be a list of 4 {x,y} points, "
+                                  "traced clockwise from top-left"}), 400
+    try:
+        pts = np.float32([[float(c["x"]), float(c["y"])] for c in corners])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "each corner needs numeric x/y"}), 400
+
+    img = cv2.imread(str(ref_path))
+    if img is None:
+        return jsonify({"error": "could not read reference image"}), 400
+
+    tl, tr, br, bl = pts
+    rect_w = max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl))
+    rect_h = max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr))
+    if rect_w < 4 or rect_h < 4:
+        return jsonify({"error": "traced area is too small"}), 400
+
+    # Map the quad onto a rectangle of that size, anchored at the quad's own
+    # top-left, so the rectified area lands roughly where it was traced.
+    dst = np.float32([
+        [tl[0], tl[1]], [tl[0] + rect_w, tl[1]],
+        [tl[0] + rect_w, tl[1] + rect_h], [tl[0], tl[1] + rect_h],
+    ])
+    H = cv2.getPerspectiveTransform(pts, dst)
+
+    h, w = img.shape[:2]
+    src_corners = np.float32([[0, 0], [w, 0], [w, h], [0, h]]).reshape(-1, 1, 2)
+    warped_corners = cv2.perspectiveTransform(src_corners, H).reshape(-1, 2)
+    min_x, min_y = warped_corners.min(axis=0)
+    max_x, max_y = warped_corners.max(axis=0)
+
+    # Shift the homography so the fully-warped image lands entirely within a
+    # non-negative canvas - otherwise anything warped to negative coords gets
+    # clipped by warpPerspective.
+    shift = np.float32([[1, 0, -min_x], [0, 1, -min_y], [0, 0, 1]])
+    H = shift @ H
+    out_w = int(round(max_x - min_x))
+    out_h = int(round(max_y - min_y))
+
+    rectified = cv2.warpPerspective(img, H, (out_w, out_h), borderValue=(255, 255, 255))
+    cv2.imwrite(str(ref_path), rectified)
+
+    cfg = load_meter_config(meter_id)
+    cleared_rois = bool(cfg["rois"])
+    cfg["rois"] = []
+    save_meter_config(meter_id, cfg)
+
+    return jsonify({"ok": True, "cleared_rois": cleared_rois})
+
+
 @app.route("/api/models", methods=["GET"])
 def api_list_models():
     """Shared pool of uploaded .tflite files - any meter can reuse any of these."""
@@ -869,4 +942,4 @@ def health():
 if __name__ == "__main__":
     t = threading.Thread(target=poller_loop, daemon=True)
     t.start()
-    app.run(host="0.0.0.0", port=8080)
+    serve(app, host="0.0.0.0", port=8080)

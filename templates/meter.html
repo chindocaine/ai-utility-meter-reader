@@ -23,6 +23,20 @@
   <button onclick="uploadReference()">Upload reference</button>
   <div id="refStatus"></div>
 
+  <h3 style="margin-top:14px;">Correct perspective (optional)</h3>
+  <p>For a camera mounted off-axis to the meter display: drag out the display's 4 corners in
+     order (top-left, top-right, bottom-right, bottom-left) - drop a corner with a click, then
+     drag it before releasing to fine-tune, and drag any already-placed corner again any time
+     to adjust it. The whole image is then warped so the traced area becomes rectangular
+     (nothing is cropped away). Nothing is saved until you click "Apply perspective
+     correction", which bakes it into the reference image and clears any existing ROI boxes.
+     Alignment against live photos already uses a full homography, so it keeps working
+     automatically after this.</p>
+  <canvas id="perspCanvas" style="border:1px solid #ccc; max-width:100%;"></canvas>
+  <div id="perspStatus"></div>
+  <button onclick="applyPerspective()">Apply perspective correction</button>
+  <button onclick="resetPerspectivePreview()">Reset points</button>
+
   <h3 style="margin-top:14px;">Straighten (optional)</h3>
   <p>Preview a rotation to correct camera skew before drawing ROIs - it's much easier to line
      up horizontal digit boxes on a de-skewed image. Nothing is saved until you click
@@ -134,6 +148,14 @@
   <label>Username: <input type="text" id="mqttUser" style="width:150px"></label>
   <label>Password: <input type="password" id="mqttPass" style="width:150px"></label>
   <button onclick="saveMqtt()">Save</button>
+</section>
+
+<section class="card">
+  <h2>9. History</h2>
+  <p>Accepted readings over time (most recent 200).</p>
+  <canvas id="historyCanvas" style="border:1px solid #ccc; max-width:100%;"></canvas>
+  <div id="historyTooltip" style="font-family: monospace; min-height: 1.2em;"></div>
+  <button onclick="loadHistoryChart()">Refresh</button>
 </section>
 
 <section class="card">

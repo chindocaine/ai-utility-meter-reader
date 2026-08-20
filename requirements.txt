@@ -5,3 +5,4 @@ tflite-runtime==2.14.0
 requests==2.32.3
 paho-mqtt==1.6.1
 Pillow==10.4.0
+waitress==3.0.2
