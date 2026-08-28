@@ -403,6 +403,77 @@ async function saveRobustness() {
   alert("Saved.");
 }
 
+async function saveDebugMode() {
+  await fetch(`${API}/config`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      debug_mode: document.getElementById("debugMode").checked,
+    }),
+  });
+  alert("Saved.");
+}
+
+function formatDebugTimestamp(ts) {
+  // ts looks like 20260827T153045123456 (UTC, no separators)
+  const m = ts.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})/);
+  if (!m) return ts;
+  const iso = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`;
+  return new Date(iso).toLocaleString();
+}
+
+async function loadDebugGallery() {
+  const entries = await (await fetch(`${API}/debug`)).json();
+  const table = document.getElementById("debugTable");
+  const image = document.getElementById("debugImage");
+  image.style.display = "none";
+
+  if (!entries.length) {
+    table.innerHTML = "<tr><td>No failed readings recorded.</td></tr>";
+    return;
+  }
+
+  table.innerHTML = entries.map((e) => `
+    <tr class="debugRow" data-ts="${e.timestamp}" style="cursor:pointer;">
+      <td style="font-family:monospace; padding:2px 12px 2px 0; white-space:nowrap;">${formatDebugTimestamp(e.timestamp)}</td>
+      <td>${e.reason}</td>
+    </tr>
+  `).join("");
+
+  table.querySelectorAll(".debugRow").forEach((row) => {
+    row.addEventListener("click", () => showDebugImage(row.dataset.ts));
+  });
+}
+
+function showDebugImage(timestamp) {
+  const image = document.getElementById("debugImage");
+  image.src = `${API}/debug/${timestamp}/image`;
+  image.style.display = "block";
+  image.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function overrideReading() {
+  const raw = document.getElementById("overrideValue").value;
+  const status = document.getElementById("overrideStatus");
+  if (raw === "") {
+    status.textContent = "Enter a value first.";
+    return;
+  }
+  const res = await fetch(`${API}/override`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value: parseFloat(raw) }),
+  });
+  const j = await res.json();
+  if (!res.ok) {
+    status.textContent = "Error: " + j.error;
+    return;
+  }
+  status.textContent = `Baseline set to ${j.value} at ${new Date(j.timestamp).toLocaleString()}.`;
+  document.getElementById("overrideValue").value = "";
+  loadHistoryChart();
+}
+
 async function saveMqtt() {
   await fetch(`${API}/config`, {
     method: "POST",
@@ -595,6 +666,7 @@ async function refreshStatus() {
   document.getElementById("allowDigitFallback").checked = !!cfg.allow_digit_fallback;
   document.getElementById("rejectDecreasing").checked = !!cfg.reject_decreasing;
   document.getElementById("maxIncrease").value = cfg.max_increase_per_reading || 0;
+  document.getElementById("debugMode").checked = !!cfg.debug_mode;
   document.getElementById("mqttHost").value = cfg.mqtt_host || "";
   document.getElementById("mqttPort").value = cfg.mqtt_port;
   document.getElementById("mqttTopic").value = cfg.mqtt_topic;
@@ -611,4 +683,5 @@ window.onload = async () => {
   loadPerspectivePreview();
   loadLastImage();
   loadHistoryChart();
+  loadDebugGallery();
 };

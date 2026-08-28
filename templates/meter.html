@@ -138,6 +138,15 @@
     <input type="number" id="maxIncrease" min="0" step="any" value="0" style="width:8em">
   </label>
   <button onclick="saveRobustness()">Save</button>
+
+  <h3 style="margin-top:14px;">Override last accepted reading</h3>
+  <p>If a long gap without a successful reading meant the meter genuinely advanced further
+     than "reject a lower reading" or "max allowed increase" would otherwise accept, set the
+     true current value here - it's recorded as the new baseline (as if it were the last
+     accepted reading) so the next real reading is checked against it instead.</p>
+  <label>Current meter value: <input type="number" id="overrideValue" step="any" style="width:10em"></label>
+  <button onclick="overrideReading()">Set as last accepted reading</button>
+  <div id="overrideStatus"></div>
 </section>
 
 <section class="card">
@@ -151,7 +160,20 @@
 </section>
 
 <section class="card">
-  <h2>9. History</h2>
+  <h2>9. Debug mode</h2>
+  <p>When enabled, every failed reading (alignment failure, unreadable digit with no
+     fallback, or a reading rejected by outlier protection) saves an annotated snapshot
+     here explaining why - useful for tracking down gaps in the history graph below.
+     The most recent 200 failures are kept.</p>
+  <label><input type="checkbox" id="debugMode"> Save a debug image on every failed reading</label>
+  <button onclick="saveDebugMode()">Save</button>
+  <button onclick="loadDebugGallery()" style="margin-left:8px;">Refresh failures</button>
+  <table id="debugTable" style="margin-top:10px; border-collapse:collapse; width:100%;"></table>
+  <img id="debugImage" style="max-width:100%; display:none; margin-top:10px; border:1px solid #ccc;">
+</section>
+
+<section class="card">
+  <h2>10. History</h2>
   <p>Last processed image (with detected digit boxes annotated):</p>
   <img id="lastImage" style="max-width:100%; display:none; border:1px solid #ccc;">
   <div id="lastImageStatus"></div>

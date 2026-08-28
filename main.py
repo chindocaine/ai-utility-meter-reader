@@ -19,6 +19,7 @@ import os
 import io
 import json
 import math
+import re
 import shutil
 import time
 import threading
@@ -49,22 +50,24 @@ METERS_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_METER_CONFIG = {
     "name": "Meter",
-    "rois": [],                 # list of {x,y,w,h} in reference-image pixel coords, left -> right
-    "decimal_digits": 3,        # how many of the trailing ROIs are after the decimal point
-    "model_file": None,         # filename inside MODELS_DIR
-    "num_classes": 10,          # 10 = plain digits, 11 = class11 (+uncertain), 100 = class100
-                                # (sub-digit continuous), 2 = dig-cont (2-output atan2 regression)
-    "alignment_method": "orb",  # "orb" or "phase" (phase = translation-only, cheaper)
+    "rois": [],                     # list of {x,y,w,h} in reference-image pixel coords, left -> right
+    "decimal_digits": 3,            # how many of the trailing ROIs are after the decimal point
+    "model_file": None,             # filename inside MODELS_DIR
+    "num_classes": 10,              # 10 = plain digits, 11 = class11 (+uncertain), 100 = class100
+                                    # (sub-digit continuous), 2 = dig-cont (2-output atan2 regression)
+    "alignment_method": "orb",      # "orb" or "phase" (phase = translation-only, cheaper)
     "min_match_count": 12,
-    "transition_low": 0.25,     # heuristics for resolving a roller mid-transition
+    "transition_low": 0.25,         # heuristics for resolving a roller mid-transition
     "transition_high": 0.75,
-    "esp_snapshot_url": "",     # optional: URL to pull a raw JPEG from periodically
+    "esp_snapshot_url": "",         # optional: URL to pull a raw JPEG from periodically
     "poll_interval_seconds": 300,
-    "allow_digit_fallback": True,      # if a digit can't be read, reuse that position's digit
-                                        # from the last accepted reading instead of failing
-    "reject_decreasing": True,        # reject a reading lower than the last accepted one
-    "max_increase_per_reading": 0,     # reject a reading that jumps more than this above the
-                                        # last accepted one; 0 = no limit
+    "allow_digit_fallback": True,   # if a digit can't be read, reuse that position's digit
+                                    # from the last accepted reading instead of failing
+    "reject_decreasing": True,      # reject a reading lower than the last accepted one
+    "max_increase_per_reading": 0,  # reject a reading that jumps more than this above the
+                                    # last accepted one; 0 = no limit
+    "debug_mode": False,            # save an annotated snapshot for every failed reading
+                                    # (alignment failure, unreadable digit, outlier rejection)
     "mqtt_host": "",
     "mqtt_port": 1883,
     "mqtt_topic": "utilitymeter/value",
@@ -104,6 +107,10 @@ def last_annotated_path(meter_id):
 
 def history_path(meter_id):
     return meter_dir(meter_id) / "history.jsonl"
+
+
+def debug_dir(meter_id):
+    return meter_dir(meter_id) / "debug"
 
 
 def meter_exists(meter_id):
@@ -493,6 +500,25 @@ def get_last_accepted(meter_id):
     return {"value": None, "digits": None}
 
 
+def digits_from_value(value, cfg):
+    """Best-effort per-position digit list for a manually-entered override
+    value, so digit-level fallback (allow_digit_fallback) has something to
+    carry forward until the next successful model read. Only meaningful when
+    the value's digit count matches the configured ROIs; otherwise returns
+    None and fallback simply won't kick in until a real reading succeeds."""
+    n = len(cfg["rois"])
+    if n <= 0 or value is None:
+        return None
+    dec = cfg["decimal_digits"]
+    scaled = int(round(value * (10 ** dec)))
+    if scaled < 0:
+        return None
+    s = str(scaled).zfill(n)
+    if len(s) != n:
+        return None
+    return [int(c) for c in s]
+
+
 def check_plausible_reading(value, last_value, cfg):
     """Reject a freshly-read value if it looks like an outlier relative to the
     last accepted reading, rather than silently feeding a bad OCR result into
@@ -515,6 +541,42 @@ def check_plausible_reading(value, last_value, cfg):
         )
 
 
+def save_debug_image(meter_id, annotated, reason, max_files=200):
+    """Persist an annotated failure snapshot under the meter's debug/ folder,
+    labeled with the failure reason, for spot-checking gaps in the reading
+    history later. Bounded to the most recent max_files so it can't grow
+    unbounded on a meter that fails a lot."""
+    d = debug_dir(meter_id)
+    d.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+
+    labeled = annotated.copy()
+    cv2.putText(labeled, reason[:90], (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 220), 2)
+    cv2.imwrite(str(d / f"{ts}.jpg"), labeled)
+    with open(d / f"{ts}.json", "w") as f:
+        json.dump({"timestamp": ts, "reason": reason}, f)
+
+    stems = sorted({p.stem for p in d.glob("*.jpg")})
+    for stale in stems[:-max_files]:
+        (d / f"{stale}.jpg").unlink(missing_ok=True)
+        (d / f"{stale}.json").unlink(missing_ok=True)
+
+
+def save_debug_snapshot(meter_id, img, cfg, ref_path, fallback_digits, reason):
+    """Best-effort annotated preview for a failed reading. Re-runs the pipeline
+    with debug=True, which returns a result (with digit boxes) instead of
+    raising when digits are unreadable, so most failures still get a useful
+    annotated image. Falls back to the raw, unaligned frame when even that
+    can't run - e.g. alignment itself failed, so there's no aligned image to
+    draw boxes on."""
+    try:
+        debug_result = process_image(img, cfg, ref_path, debug=True, fallback_digits=fallback_digits)
+        annotated = debug_result["annotated"]
+    except Exception:
+        annotated = img.copy()
+    save_debug_image(meter_id, annotated, reason)
+
+
 def handle_new_image(meter_id, img_bytes, cfg):
     arr = np.frombuffer(img_bytes, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
@@ -525,13 +587,23 @@ def handle_new_image(meter_id, img_bytes, cfg):
         f.write(img_bytes)
 
     last = get_last_accepted(meter_id)
-    result = process_image(img, cfg, reference_path(meter_id), fallback_digits=last["digits"])
+    try:
+        result = process_image(img, cfg, reference_path(meter_id), fallback_digits=last["digits"])
+    except Exception as e:
+        if cfg.get("debug_mode"):
+            save_debug_snapshot(meter_id, img, cfg, reference_path(meter_id), last["digits"], str(e))
+        raise
     cv2.imwrite(str(last_annotated_path(meter_id)), result["annotated"])
 
     # Written above regardless of outcome, so the setup UI's "last image" view
     # still shows what was actually seen even when the reading gets rejected
     # below.
-    check_plausible_reading(result["value"], last["value"], cfg)
+    try:
+        check_plausible_reading(result["value"], last["value"], cfg)
+    except Exception as e:
+        if cfg.get("debug_mode"):
+            save_debug_image(meter_id, result["annotated"], str(e))
+        raise
 
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -932,6 +1004,78 @@ def api_history(meter_id):
         return jsonify([])
     lines = hp.read_text().strip().splitlines()[-200:]
     return jsonify([json.loads(l) for l in lines if l])
+
+
+@app.route("/api/meters/<meter_id>/override", methods=["POST"])
+def api_override_reading(meter_id):
+    """Manually set the "last accepted reading" baseline - e.g. after a long
+    gap with no successful reading during which the meter genuinely advanced
+    further than reject_decreasing/max_increase_per_reading would otherwise
+    allow the next real reading to be accepted against. Writes a synthetic
+    history entry (so it persists across restarts, same as any other accepted
+    reading) and becomes the baseline for the next outlier check and digit
+    fallback."""
+    if not meter_exists(meter_id):
+        return jsonify({"error": "no such meter"}), 404
+    body = request.get_json(force=True) or {}
+    try:
+        value = float(body["value"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "value is required and must be a number"}), 400
+
+    cfg = load_meter_config(meter_id)
+    digits = digits_from_value(value, cfg)
+
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "value": value,
+        "digits": digits,
+        "confidences": None,
+        "substituted_positions": [],
+        "manual_override": True,
+    }
+    with open(history_path(meter_id), "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+    with _lock:
+        _last_results.setdefault(meter_id, {}).update({
+            "value": value,
+            "digits": digits,
+            "timestamp": entry["timestamp"],
+            "error": None,
+        })
+
+    return jsonify(entry)
+
+
+@app.route("/api/meters/<meter_id>/debug", methods=["GET"])
+def api_list_debug(meter_id):
+    """List recent failed-reading snapshots (only populated when debug_mode is
+    on for this meter), most recent first."""
+    if not meter_exists(meter_id):
+        return jsonify({"error": "no such meter"}), 404
+    d = debug_dir(meter_id)
+    if not d.exists():
+        return jsonify([])
+    entries = []
+    for jf in sorted(d.glob("*.json"), reverse=True):
+        try:
+            entries.append(json.loads(jf.read_text()))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return jsonify(entries[:200])
+
+
+@app.route("/api/meters/<meter_id>/debug/<timestamp>/image", methods=["GET"])
+def api_get_debug_image(meter_id, timestamp):
+    if not meter_exists(meter_id):
+        return jsonify({"error": "no such meter"}), 404
+    if not re.fullmatch(r"[0-9A-Za-z]+", timestamp):
+        return jsonify({"error": "invalid id"}), 400
+    p = debug_dir(meter_id) / f"{timestamp}.jpg"
+    if not p.exists():
+        return jsonify({"error": "not found"}), 404
+    return send_file(str(p), mimetype="image/jpeg")
 
 
 @app.route("/health")
