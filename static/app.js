@@ -125,6 +125,19 @@ async function uploadReference() {
   loadPerspectivePreview();
 }
 
+async function grabReferenceFromSnapshot() {
+  const status = document.getElementById("refStatus");
+  status.textContent = "Grabbing...";
+  const res = await fetch(`${API}/reference/from-snapshot`, { method: "POST" });
+  const j = await res.json();
+  status.textContent = j.ok ? "Grabbed from snapshot URL." : "Error: " + j.error;
+  if (j.ok) {
+    loadReferenceIntoCanvas();
+    loadRotatePreview();
+    loadPerspectivePreview();
+  }
+}
+
 // --- Reference image rotation preview (client-side only until "Apply") ---
 
 let rotateRefImg = new Image();
@@ -422,18 +435,27 @@ function formatDebugTimestamp(ts) {
   return new Date(iso).toLocaleString();
 }
 
-async function loadDebugGallery() {
-  const entries = await (await fetch(`${API}/debug`)).json();
-  const table = document.getElementById("debugTable");
-  const image = document.getElementById("debugImage");
-  image.style.display = "none";
+let debugEntries = [];
+const DEBUG_PAGE_SIZE = 10;
 
-  if (!entries.length) {
+async function loadDebugGallery() {
+  debugEntries = await (await fetch(`${API}/debug`)).json();
+  document.getElementById("debugImage").style.display = "none";
+  renderDebugTable(DEBUG_PAGE_SIZE);
+}
+
+function renderDebugTable(limit) {
+  const table = document.getElementById("debugTable");
+  const showAllBtn = document.getElementById("debugShowAll");
+
+  if (!debugEntries.length) {
     table.innerHTML = "<tr><td>No failed readings recorded.</td></tr>";
+    showAllBtn.style.display = "none";
     return;
   }
 
-  table.innerHTML = entries.map((e) => `
+  const shown = limit ? debugEntries.slice(0, limit) : debugEntries;
+  table.innerHTML = shown.map((e) => `
     <tr class="debugRow" data-ts="${e.timestamp}" style="cursor:pointer;">
       <td style="font-family:monospace; padding:2px 12px 2px 0; white-space:nowrap;">${formatDebugTimestamp(e.timestamp)}</td>
       <td>${e.reason}</td>
@@ -443,6 +465,12 @@ async function loadDebugGallery() {
   table.querySelectorAll(".debugRow").forEach((row) => {
     row.addEventListener("click", () => showDebugImage(row.dataset.ts));
   });
+
+  showAllBtn.style.display = (limit && debugEntries.length > limit) ? "inline-block" : "none";
+}
+
+function showAllDebugEntries() {
+  renderDebugTable(null);
 }
 
 function showDebugImage(timestamp) {

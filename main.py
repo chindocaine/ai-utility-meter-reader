@@ -109,6 +109,10 @@ def history_path(meter_id):
     return meter_dir(meter_id) / "history.jsonl"
 
 
+def pending_path(meter_id):
+    return meter_dir(meter_id) / "pending.json"
+
+
 def debug_dir(meter_id):
     return meter_dir(meter_id) / "debug"
 
@@ -500,6 +504,27 @@ def get_last_accepted(meter_id):
     return {"value": None, "digits": None}
 
 
+def load_pending(meter_id):
+    """The one buffered-but-not-yet-accepted reading for this meter, if any -
+    see handle_new_image for the one-reading confirmation buffer this backs."""
+    p = pending_path(meter_id)
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def save_pending(meter_id, entry):
+    p = pending_path(meter_id)
+    if entry is None:
+        p.unlink(missing_ok=True)
+        return
+    with open(p, "w") as f:
+        json.dump(entry, f)
+
+
 def digits_from_value(value, cfg):
     """Best-effort per-position digit list for a manually-entered override
     value, so digit-level fallback (allow_digit_fallback) has something to
@@ -586,45 +611,77 @@ def handle_new_image(meter_id, img_bytes, cfg):
     with open(last_raw_path(meter_id), "wb") as f:
         f.write(img_bytes)
 
-    last = get_last_accepted(meter_id)
+    last_accepted = get_last_accepted(meter_id)
     try:
-        result = process_image(img, cfg, reference_path(meter_id), fallback_digits=last["digits"])
+        result = process_image(img, cfg, reference_path(meter_id), fallback_digits=last_accepted["digits"])
     except Exception as e:
         if cfg.get("debug_mode"):
-            save_debug_snapshot(meter_id, img, cfg, reference_path(meter_id), last["digits"], str(e))
+            save_debug_snapshot(meter_id, img, cfg, reference_path(meter_id), last_accepted["digits"], str(e))
         raise
     cv2.imwrite(str(last_annotated_path(meter_id)), result["annotated"])
 
     # Written above regardless of outcome, so the setup UI's "last image" view
     # still shows what was actually seen even when the reading gets rejected
     # below.
-    try:
-        check_plausible_reading(result["value"], last["value"], cfg)
-    except Exception as e:
-        if cfg.get("debug_mode"):
-            save_debug_image(meter_id, result["annotated"], str(e))
-        raise
 
-    entry = {
+    # One-reading confirmation buffer: a fresh reading is only accepted (written
+    # to history, published, exposed as the current value) once a *subsequent*
+    # reading confirms it by being the same or higher. Without this, a single
+    # frame misread a little too high (not enough to trip max_increase_per_reading)
+    # would permanently become the new "last accepted" baseline, and every
+    # correct-but-now-comparatively-lower reading after it would fail
+    # reject_decreasing forever. If the next reading doesn't confirm the
+    # buffered one but is still plausible against the last *committed* reading,
+    # the buffered one is discarded as the likely misread instead.
+    pending = load_pending(meter_id)
+    baseline_value = pending["value"] if pending is not None else last_accepted["value"]
+    try:
+        check_plausible_reading(result["value"], baseline_value, cfg)
+    except Exception as e:
+        if pending is None:
+            if cfg.get("debug_mode"):
+                save_debug_image(meter_id, result["annotated"], str(e))
+            raise
+        try:
+            check_plausible_reading(result["value"], last_accepted["value"], cfg)
+        except Exception:
+            if cfg.get("debug_mode"):
+                save_debug_image(meter_id, result["annotated"], str(e))
+            raise
+        log.info(
+            "Meter %s: discarding buffered reading %s as a likely misread, superseded by %s",
+            meter_id, pending["value"], result["value"],
+        )
+        pending = None
+
+    committed_entry = None
+    if pending is not None:
+        committed_entry = pending
+        with open(history_path(meter_id), "a") as f:
+            f.write(json.dumps(committed_entry) + "\n")
+        with _lock:
+            _last_results.setdefault(meter_id, {}).update({
+                "value": committed_entry["value"],
+                "digits": committed_entry["digits"],
+                "timestamp": committed_entry["timestamp"],
+                "error": None,
+            })
+        publish_mqtt(cfg, committed_entry["value"])
+
+    new_pending = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "value": result["value"],
         "digits": result["digits"],
         "confidences": [round(c, 3) for c in result["confidences"]],
         "substituted_positions": result["substituted_positions"],
     }
-    with open(history_path(meter_id), "a") as f:
-        f.write(json.dumps(entry) + "\n")
+    save_pending(meter_id, new_pending)
 
-    with _lock:
-        _last_results.setdefault(meter_id, {}).update({
-            "value": result["value"],
-            "digits": result["digits"],
-            "timestamp": entry["timestamp"],
-            "error": None,
-        })
-
-    publish_mqtt(cfg, result["value"])
-    return entry
+    return {
+        **new_pending,
+        "accepted": committed_entry is not None,
+        "committed_reading": committed_entry,
+    }
 
 
 def poller_loop():
@@ -720,6 +777,28 @@ def api_upload_reference(meter_id):
         return jsonify({"error": "no file uploaded"}), 400
     f = request.files["file"]
     f.save(str(reference_path(meter_id)))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/meters/<meter_id>/reference/from-snapshot", methods=["POST"])
+def api_reference_from_snapshot(meter_id):
+    """Grab a fresh image from this meter's configured esp_snapshot_url and use
+    it directly as the reference image - saves downloading it and re-uploading
+    by hand when you just want to (re)capture a current photo of the meter."""
+    if not meter_exists(meter_id):
+        return jsonify({"error": "no such meter"}), 404
+    cfg = load_meter_config(meter_id)
+    url = cfg.get("esp_snapshot_url")
+    if not url:
+        return jsonify({"error": "no snapshot URL configured for this meter"}), 400
+    try:
+        import requests
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+    except Exception as e:
+        return jsonify({"error": f"could not fetch snapshot: {e}"}), 400
+    with open(reference_path(meter_id), "wb") as f:
+        f.write(resp.content)
     return jsonify({"ok": True})
 
 
@@ -1036,6 +1115,11 @@ def api_override_reading(meter_id):
     }
     with open(history_path(meter_id), "a") as f:
         f.write(json.dumps(entry) + "\n")
+
+    # Any buffered-but-unconfirmed reading was judged against the old baseline
+    # and is now stale - drop it so the next reading is judged fresh against
+    # this override instead.
+    save_pending(meter_id, None)
 
     with _lock:
         _last_results.setdefault(meter_id, {}).update({

@@ -21,6 +21,7 @@
   <p>Upload a clean, well-lit photo of the meter. This defines the coordinate space for every digit ROI below.</p>
   <input type="file" id="refFile" accept="image/*">
   <button onclick="uploadReference()">Upload reference</button>
+  <button onclick="grabReferenceFromSnapshot()">Grab from snapshot URL</button>
   <div id="refStatus"></div>
 
   <h3 style="margin-top:14px;">Correct perspective (optional)</h3>
@@ -169,6 +170,7 @@
   <button onclick="saveDebugMode()">Save</button>
   <button onclick="loadDebugGallery()" style="margin-left:8px;">Refresh failures</button>
   <table id="debugTable" style="margin-top:10px; border-collapse:collapse; width:100%;"></table>
+  <button id="debugShowAll" onclick="showAllDebugEntries()" style="display:none; margin-top:6px;">Show all</button>
   <img id="debugImage" style="max-width:100%; display:none; margin-top:10px; border:1px solid #ccc;">
 </section>
 
