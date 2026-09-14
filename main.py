@@ -70,9 +70,13 @@ DEFAULT_METER_CONFIG = {
                                     # (alignment failure, unreadable digit, outlier rejection)
     "mqtt_host": "",
     "mqtt_port": 1883,
-    "mqtt_topic": "utilitymeter/value",
+    "mqtt_topic_prefix": "utilitymeter",   # the value is published to {prefix}/{meter_id}/value
     "mqtt_username": "",
     "mqtt_password": "",
+    "mqtt_discovery": False,               # publish a Home Assistant MQTT discovery config
+    "mqtt_discovery_prefix": "homeassistant",  # HA's discovery topic prefix
+    "mqtt_unit_of_measurement": "",        # e.g. "m³", "kWh" - passed through to HA
+    "mqtt_device_class": "",               # optional HA device_class, e.g. "water", "gas", "energy"
 }
 
 _lock = threading.Lock()
@@ -156,6 +160,9 @@ def create_meter(name):
 def delete_meter(meter_id):
     d = meter_dir(meter_id)
     if d.exists():
+        cfg = load_meter_config(meter_id)
+        if cfg.get("mqtt_discovery"):
+            unpublish_mqtt_discovery(meter_id, cfg)
         shutil.rmtree(d)
     with _lock:
         _last_results.pop(meter_id, None)
@@ -466,7 +473,74 @@ def process_image(img, cfg, ref_path, debug=False, fallback_digits=None):
     return result
 
 
-def publish_mqtt(cfg, value):
+def mqtt_value_topic(meter_id, cfg):
+    prefix = cfg.get("mqtt_topic_prefix") or "utilitymeter"
+    return f"{prefix}/{meter_id}/value"
+
+
+def mqtt_discovery_topic(meter_id, cfg):
+    prefix = cfg.get("mqtt_discovery_prefix") or "homeassistant"
+    return f"{prefix}/sensor/utilitymeter_{meter_id}/config"
+
+
+def mqtt_discovery_payload(meter_id, cfg):
+    """Home Assistant MQTT discovery config for this meter's sensor - see
+    https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery. Declared
+    as state_class total_increasing since a mechanical meter reading only
+    ever goes up (matching reject_decreasing's own assumption), which lets HA's
+    energy/utility dashboards track consumption deltas correctly."""
+    unique_id = f"utilitymeter_{meter_id}"
+    payload = {
+        "name": cfg["name"],
+        "unique_id": unique_id,
+        "state_topic": mqtt_value_topic(meter_id, cfg),
+        "value_template": "{{ value_json.value }}",
+        "state_class": "total_increasing",
+        "device": {
+            "identifiers": [unique_id],
+            "name": cfg["name"],
+            "manufacturer": "ai-utility-meter-reader",
+        },
+    }
+    if cfg.get("mqtt_unit_of_measurement"):
+        payload["unit_of_measurement"] = cfg["mqtt_unit_of_measurement"]
+    if cfg.get("mqtt_device_class"):
+        payload["device_class"] = cfg["mqtt_device_class"]
+    return payload
+
+
+def publish_mqtt(meter_id, cfg, value):
+    if not cfg.get("mqtt_host"):
+        return
+    try:
+        import paho.mqtt.publish as publish
+        auth = None
+        if cfg.get("mqtt_username"):
+            auth = {"username": cfg["mqtt_username"], "password": cfg.get("mqtt_password", "")}
+        hostname = cfg["mqtt_host"]
+        port = int(cfg.get("mqtt_port", 1883))
+
+        if cfg.get("mqtt_discovery"):
+            # Retained so Home Assistant picks the sensor back up after a
+            # restart without needing a fresh reading to republish it.
+            publish.single(
+                mqtt_discovery_topic(meter_id, cfg),
+                payload=json.dumps(mqtt_discovery_payload(meter_id, cfg)),
+                hostname=hostname, port=port, auth=auth, retain=True,
+            )
+
+        publish.single(
+            mqtt_value_topic(meter_id, cfg), payload=json.dumps({"value": value}),
+            hostname=hostname, port=port, auth=auth,
+        )
+    except Exception as e:
+        log.warning("MQTT publish failed: %s", e)
+
+
+def unpublish_mqtt_discovery(meter_id, cfg):
+    """Clear a previously-retained discovery config - e.g. when discovery is
+    turned off or the meter is deleted - so the sensor doesn't linger as a
+    stale/unavailable entity in Home Assistant."""
     if not cfg.get("mqtt_host"):
         return
     try:
@@ -475,11 +549,11 @@ def publish_mqtt(cfg, value):
         if cfg.get("mqtt_username"):
             auth = {"username": cfg["mqtt_username"], "password": cfg.get("mqtt_password", "")}
         publish.single(
-            cfg["mqtt_topic"], payload=json.dumps({"value": value}),
+            mqtt_discovery_topic(meter_id, cfg), payload="", retain=True,
             hostname=cfg["mqtt_host"], port=int(cfg.get("mqtt_port", 1883)), auth=auth,
         )
     except Exception as e:
-        log.warning("MQTT publish failed: %s", e)
+        log.warning("MQTT discovery cleanup failed: %s", e)
 
 
 def get_last_accepted(meter_id):
@@ -666,7 +740,7 @@ def handle_new_image(meter_id, img_bytes, cfg):
                 "timestamp": committed_entry["timestamp"],
                 "error": None,
             })
-        publish_mqtt(cfg, committed_entry["value"])
+        publish_mqtt(meter_id, cfg, committed_entry["value"])
 
     new_pending = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -761,11 +835,14 @@ def api_set_config(meter_id):
     if not meter_exists(meter_id):
         return jsonify({"error": "no such meter"}), 404
     cfg = load_meter_config(meter_id)
+    was_discovery_on = cfg.get("mqtt_discovery")
     body = request.get_json(force=True)
     for key in DEFAULT_METER_CONFIG:
         if key in body:
             cfg[key] = body[key]
     save_meter_config(meter_id, cfg)
+    if was_discovery_on and not cfg.get("mqtt_discovery"):
+        unpublish_mqtt_discovery(meter_id, cfg)
     return jsonify(cfg)
 
 

@@ -509,9 +509,23 @@ async function saveMqtt() {
     body: JSON.stringify({
       mqtt_host: document.getElementById("mqttHost").value,
       mqtt_port: parseInt(document.getElementById("mqttPort").value || "1883"),
-      mqtt_topic: document.getElementById("mqttTopic").value,
+      mqtt_topic_prefix: document.getElementById("mqttTopicPrefix").value,
       mqtt_username: document.getElementById("mqttUser").value,
       mqtt_password: document.getElementById("mqttPass").value,
+    }),
+  });
+  alert("Saved.");
+}
+
+async function saveMqttDiscovery() {
+  await fetch(`${API}/config`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      mqtt_discovery: document.getElementById("mqttDiscovery").checked,
+      mqtt_discovery_prefix: document.getElementById("mqttDiscoveryPrefix").value,
+      mqtt_unit_of_measurement: document.getElementById("mqttUnit").value,
+      mqtt_device_class: document.getElementById("mqttDeviceClass").value,
     }),
   });
   alert("Saved.");
@@ -697,8 +711,12 @@ async function refreshStatus() {
   document.getElementById("debugMode").checked = !!cfg.debug_mode;
   document.getElementById("mqttHost").value = cfg.mqtt_host || "";
   document.getElementById("mqttPort").value = cfg.mqtt_port;
-  document.getElementById("mqttTopic").value = cfg.mqtt_topic;
+  document.getElementById("mqttTopicPrefix").value = cfg.mqtt_topic_prefix;
   document.getElementById("mqttUser").value = cfg.mqtt_username || "";
+  document.getElementById("mqttDiscovery").checked = !!cfg.mqtt_discovery;
+  document.getElementById("mqttDiscoveryPrefix").value = cfg.mqtt_discovery_prefix || "";
+  document.getElementById("mqttUnit").value = cfg.mqtt_unit_of_measurement || "";
+  document.getElementById("mqttDeviceClass").value = cfg.mqtt_device_class || "";
   rois = cfg.rois || [];
 }
 

@@ -154,10 +154,21 @@
   <h2>8. MQTT (optional)</h2>
   <label>Host: <input type="text" id="mqttHost" style="width:200px"></label>
   <label>Port: <input type="number" id="mqttPort" value="1883" style="width:6em"></label>
-  <label>Topic: <input type="text" id="mqttTopic" style="width:200px"></label><br>
+  <label>Topic prefix: <input type="text" id="mqttTopicPrefix" style="width:200px" placeholder="utilitymeter"></label>
+  <span style="color:#777;">value is published to <code>[prefix]/[meter id]/value</code></span><br>
   <label>Username: <input type="text" id="mqttUser" style="width:150px"></label>
   <label>Password: <input type="password" id="mqttPass" style="width:150px"></label>
   <button onclick="saveMqtt()">Save</button>
+
+  <h3 style="margin-top:14px;">Home Assistant auto discovery</h3>
+  <p>Publishes a retained <a href="https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery" target="_blank">MQTT discovery</a>
+     config alongside every reading, so this meter shows up in Home Assistant automatically -
+     no manual MQTT sensor YAML needed.</p>
+  <label><input type="checkbox" id="mqttDiscovery"> Enable Home Assistant auto discovery</label><br>
+  <label>Discovery prefix: <input type="text" id="mqttDiscoveryPrefix" style="width:150px" placeholder="homeassistant"></label><br>
+  <label>Unit of measurement: <input type="text" id="mqttUnit" style="width:100px" placeholder="m³"></label>
+  <label>Device class: <input type="text" id="mqttDeviceClass" style="width:100px" placeholder="water"></label>
+  <button onclick="saveMqttDiscovery()">Save</button>
 </section>
 
 <section class="card">
