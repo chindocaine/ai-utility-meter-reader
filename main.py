@@ -57,6 +57,9 @@ DEFAULT_METER_CONFIG = {
                                     # (sub-digit continuous), 2 = dig-cont (2-output atan2 regression)
     "alignment_method": "orb",      # "orb" or "phase" (phase = translation-only, cheaper)
     "min_match_count": 12,
+    "image_brightness": 0,          # additive brightness offset, -100..100, applied before alignment
+    "image_contrast": 1.0,          # multiplicative contrast, 0.5..3.0, applied before alignment
+    "image_sharpness": 0.0,         # unsharp-mask strength, 0..3, applied before alignment
     "transition_low": 0.25,         # heuristics for resolving a roller mid-transition
     "transition_high": 0.75,
     "esp_snapshot_url": "",         # optional: URL to pull a raw JPEG from periodically
@@ -295,6 +298,23 @@ def run_digit_model(crop, model_path: Path, num_classes: int, debug=False):
     return raw_value, confidence, is_valid
 
 
+def adjust_image(img, cfg):
+    """Apply this meter's brightness/contrast/sharpness adjustment. Used on
+    both the live capture and the reference image (see process_image) so a
+    meter with a dim or hazy camera can be tuned for readability once, in the
+    setup UI, instead of needing every incoming photo to already be perfect."""
+    brightness = cfg.get("image_brightness") or 0
+    contrast = cfg.get("image_contrast") or 1.0
+    sharpness = cfg.get("image_sharpness") or 0.0
+
+    if brightness or contrast != 1.0:
+        img = cv2.convertScaleAbs(img, alpha=contrast, beta=brightness)
+    if sharpness > 0:
+        blurred = cv2.GaussianBlur(img, (0, 0), sigmaX=3)
+        img = cv2.addWeighted(img, 1 + sharpness, blurred, -sharpness, 0)
+    return img
+
+
 def align_image(img, reference, method, min_match_count):
     """Register img against reference. Returns (aligned_img, success_bool)."""
     ref_h, ref_w = reference.shape[:2]
@@ -387,6 +407,8 @@ def process_image(img, cfg, ref_path, debug=False, fallback_digits=None):
         raise RuntimeError("No tflite model configured yet")
 
     reference = cv2.imread(str(ref_path))
+    img = adjust_image(img, cfg)
+    reference = adjust_image(reference, cfg)
     aligned, ok = align_image(img, reference, cfg["alignment_method"], cfg["min_match_count"])
     if not ok:
         raise RuntimeError("Image alignment failed (not enough matched features)")
