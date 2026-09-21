@@ -110,7 +110,8 @@
   <p>Try the full pipeline against a photo (or the most recently received image).</p>
   <input type="file" id="testFile" accept="image/*">
   <label><input type="checkbox" id="testDebug"> Show debug details (per-digit model output + crops)</label>
-  <button onclick="runTest()">Run test</button>
+  <button onclick="runTest()">Run test (upload or use latest received image)</button>
+  <button onclick="runTestFromSnapshot()">Run test (grab image from snapshot URL)</button>
   <div id="testResult"></div>
   <img id="testImage" style="max-width:100%; display:none; margin-top:10px;">
   <div id="testDebugPanel" style="display:none; margin-top:10px;"></div>
@@ -121,6 +122,7 @@
   <p>If the meter's ESP32 already exposes a raw snapshot URL (e.g. AI-on-the-edge's <code>/img_tmp/raw.jpg</code>),
      point this service at it and it will pull + process a new image on a schedule - no ESP32 changes required.
      Otherwise, POST a JPEG to this meter's <code>/api/meters/&lt;id&gt;/image</code> endpoint from any script/cron job.</p>
+  <label><input type="checkbox" id="autoCaptureEnabled"> Enable automatic capture</label><br>
   <label>Snapshot URL: <input type="text" id="espUrl" style="width:400px" placeholder="http://192.168.1.50/img_tmp/raw.jpg"></label><br>
   <label>Poll interval (seconds): <input type="number" id="pollInterval" value="300" style="width:6em"></label>
   <button onclick="saveEsp()">Save</button>
@@ -166,8 +168,14 @@
      no manual MQTT sensor YAML needed.</p>
   <label><input type="checkbox" id="mqttDiscovery"> Enable Home Assistant auto discovery</label><br>
   <label>Discovery prefix: <input type="text" id="mqttDiscoveryPrefix" style="width:150px" placeholder="homeassistant"></label><br>
-  <label>Unit of measurement: <input type="text" id="mqttUnit" style="width:100px" placeholder="m³"></label>
-  <label>Device class: <input type="text" id="mqttDeviceClass" style="width:100px" placeholder="water"></label>
+  <label>Unit of measurement: <input type="text" id="mqttUnit" style="width:100px" placeholder="custom unit"></label>
+  <button type="button" onclick="setMqttUnit('m³')">m³</button>
+  <button type="button" onclick="setMqttUnit('kWh')">kWh</button>
+  <br>
+  <label>Device class: <input type="text" id="mqttDeviceClass" style="width:100px" placeholder="custom device_class"></label>
+  <button type="button" onclick="setMqttDeviceClass('water')">water</button>
+  <button type="button" onclick="setMqttDeviceClass('gas')">gas</button>
+  <button type="button" onclick="setMqttDeviceClass('energy')">energy</button><br>
   <button onclick="saveMqttDiscovery()">Save</button>
 </section>
 

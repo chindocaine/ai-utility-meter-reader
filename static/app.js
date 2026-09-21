@@ -398,6 +398,7 @@ async function saveEsp() {
     body: JSON.stringify({
       esp_snapshot_url: document.getElementById("espUrl").value,
       poll_interval_seconds: parseInt(document.getElementById("pollInterval").value || "300"),
+      auto_capture_enabled: document.getElementById("autoCaptureEnabled").checked,
     }),
   });
   alert("Saved.");
@@ -517,6 +518,14 @@ async function saveMqtt() {
   alert("Saved.");
 }
 
+function setMqttUnit(value) {
+  document.getElementById("mqttUnit").value = value;
+}
+
+function setMqttDeviceClass(value) {
+  document.getElementById("mqttDeviceClass").value = value;
+}
+
 async function saveMqttDiscovery() {
   await fetch(`${API}/config`, {
     method: "POST",
@@ -531,10 +540,14 @@ async function saveMqttDiscovery() {
   alert("Saved.");
 }
 
-async function runTest() {
+async function runTest(fromSnapshot) {
   const fd = new FormData();
-  const f = document.getElementById("testFile").files[0];
-  if (f) fd.append("file", f);
+  if (fromSnapshot) {
+    fd.append("from_snapshot", "true");
+  } else {
+    const f = document.getElementById("testFile").files[0];
+    if (f) fd.append("file", f);
+  }
   const debug = document.getElementById("testDebug").checked;
   fd.append("debug", debug ? "true" : "false");
 
@@ -575,6 +588,10 @@ async function runTest() {
   } else {
     debugPanel.style.display = "none";
   }
+}
+
+async function runTestFromSnapshot() {
+  runTest(true);
 }
 
 // --- Last processed image ---
@@ -705,6 +722,7 @@ async function refreshStatus() {
   document.getElementById("minMatch").value = cfg.min_match_count;
   document.getElementById("espUrl").value = cfg.esp_snapshot_url || "";
   document.getElementById("pollInterval").value = cfg.poll_interval_seconds;
+  document.getElementById("autoCaptureEnabled").checked = cfg.auto_capture_enabled !== false;
   document.getElementById("allowDigitFallback").checked = !!cfg.allow_digit_fallback;
   document.getElementById("rejectDecreasing").checked = !!cfg.reject_decreasing;
   document.getElementById("maxIncrease").value = cfg.max_increase_per_reading || 0;

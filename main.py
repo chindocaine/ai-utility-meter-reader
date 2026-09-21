@@ -61,6 +61,7 @@ DEFAULT_METER_CONFIG = {
     "transition_high": 0.75,
     "esp_snapshot_url": "",         # optional: URL to pull a raw JPEG from periodically
     "poll_interval_seconds": 300,
+    "auto_capture_enabled": True,   # pause polling without losing the configured URL/interval
     "allow_digit_fallback": True,   # if a digit can't be read, reuse that position's digit
                                     # from the last accepted reading instead of failing
     "reject_decreasing": True,      # reject a reading lower than the last accepted one
@@ -769,7 +770,7 @@ def poller_loop():
             url = cfg.get("esp_snapshot_url")
             interval = int(cfg.get("poll_interval_seconds", 300)) or 300
             _next_poll_at[meter_id] = now + interval
-            if not url:
+            if not url or not cfg.get("auto_capture_enabled", True):
                 continue
             try:
                 import requests
@@ -1065,7 +1066,19 @@ def api_test(meter_id):
     if not meter_exists(meter_id):
         return jsonify({"error": "no such meter"}), 404
     cfg = load_meter_config(meter_id)
-    if "file" in request.files:
+    from_snapshot = str(request.form.get("from_snapshot", "false")).lower() in ("1", "true", "yes", "on")
+    if from_snapshot:
+        url = cfg.get("esp_snapshot_url")
+        if not url:
+            return jsonify({"error": "no snapshot URL configured for this meter"}), 400
+        try:
+            import requests
+            resp = requests.get(url, timeout=15)
+            resp.raise_for_status()
+            img_bytes = resp.content
+        except Exception as e:
+            return jsonify({"error": f"could not fetch snapshot: {e}"}), 400
+    elif "file" in request.files:
         img_bytes = request.files["file"].read()
     elif last_raw_path(meter_id).exists():
         img_bytes = last_raw_path(meter_id).read_bytes()
