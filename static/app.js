@@ -223,81 +223,67 @@ async function applyRotation() {
   alert("Rotation applied." + (j.cleared_rois ? " ROI boxes were cleared - redraw them below." : ""));
 }
 
-// --- Image quality preview (brightness/contrast/sharpness, applied at processing time) ---
+// --- Image quality preview (brightness/contrast/sharpness, baked into the reference) ---
+// The preview is rendered by the backend itself (not approximated client-side
+// with CSS filters), so it always matches exactly what gets baked in.
 
-let qualityRefImg = new Image();
-const qualityCanvas = document.getElementById("qualityCanvas");
-const qualityCtx = qualityCanvas.getContext("2d");
+let savedQuality = { brightness: 0, contrast: 1, sharpness: 0 };
+let qualityPreviewTimer = null;
 
-function loadQualityPreview() {
-  qualityRefImg = new Image();
-  qualityRefImg.onload = () => drawQualityPreview();
-  qualityRefImg.src = `${API}/reference?ts=` + Date.now();
+function currentQualityValues() {
+  return {
+    image_brightness: parseFloat(document.getElementById("qualityBrightness").value),
+    image_contrast: parseFloat(document.getElementById("qualityContrast").value),
+    image_sharpness: parseFloat(document.getElementById("qualitySharpness").value),
+  };
 }
 
-function drawQualityPreview() {
-  const brightness = parseFloat(document.getElementById("qualityBrightness").value);
-  const contrast = parseFloat(document.getElementById("qualityContrast").value);
-  const sharpness = parseFloat(document.getElementById("qualitySharpness").value);
-  document.getElementById("qualityBrightnessVal").textContent = brightness;
-  document.getElementById("qualityContrastVal").textContent = contrast.toFixed(1);
-  document.getElementById("qualitySharpnessVal").textContent = sharpness.toFixed(1);
+function scheduleQualityPreview() {
+  const v = currentQualityValues();
+  document.getElementById("qualityBrightnessVal").textContent = v.image_brightness;
+  document.getElementById("qualityContrastVal").textContent = v.image_contrast.toFixed(1);
+  document.getElementById("qualitySharpnessVal").textContent = v.image_sharpness.toFixed(1);
 
-  if (!qualityRefImg.width) return;
-  const maxW = 860;
-  const scale = qualityRefImg.width > maxW ? maxW / qualityRefImg.width : 1;
-  const w = Math.round(qualityRefImg.width * scale);
-  const h = Math.round(qualityRefImg.height * scale);
-  qualityCanvas.width = w;
-  qualityCanvas.height = h;
+  clearTimeout(qualityPreviewTimer);
+  qualityPreviewTimer = setTimeout(loadQualityPreview, 200);
+}
 
-  // Approximates the backend's cv2 convertScaleAbs(alpha=contrast, beta=brightness) -
-  // exact enough to guide slider choice, not meant to match pixel-for-pixel.
-  qualityCtx.filter = `brightness(${1 + brightness / 100}) contrast(${contrast})`;
-  qualityCtx.drawImage(qualityRefImg, 0, 0, w, h);
-  qualityCtx.filter = "none";
-
-  if (sharpness > 0) {
-    // Unsharp mask: blend the current (brightness/contrast-adjusted) canvas
-    // against a blurred copy of itself, same idea as the backend's
-    // GaussianBlur + addWeighted step.
-    const blurCanvas = document.createElement("canvas");
-    blurCanvas.width = w;
-    blurCanvas.height = h;
-    const blurCtx = blurCanvas.getContext("2d");
-    blurCtx.filter = "blur(3px)";
-    blurCtx.drawImage(qualityCanvas, 0, 0);
-
-    const base = qualityCtx.getImageData(0, 0, w, h);
-    const blurred = blurCtx.getImageData(0, 0, w, h);
-    const out = base.data;
-    for (let i = 0; i < out.length; i += 4) {
-      for (let c = 0; c < 3; c++) {
-        out[i + c] = Math.min(255, Math.max(0, out[i + c] + sharpness * (out[i + c] - blurred.data[i + c])));
-      }
-    }
-    qualityCtx.putImageData(base, 0, 0);
+async function loadQualityPreview() {
+  const image = document.getElementById("qualityPreviewImage");
+  const res = await fetch(`${API}/reference/quality/preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(currentQualityValues()),
+  });
+  if (!res.ok) {
+    image.style.display = "none";
+    return;
   }
+  const blobUrl = URL.createObjectURL(await res.blob());
+  image.onload = () => URL.revokeObjectURL(blobUrl);
+  image.src = blobUrl;
+  image.style.display = "block";
 }
 
 function resetImageQualityPreview() {
-  document.getElementById("qualityBrightness").value = 0;
-  document.getElementById("qualityContrast").value = 1;
-  document.getElementById("qualitySharpness").value = 0;
-  drawQualityPreview();
+  document.getElementById("qualityBrightness").value = savedQuality.brightness;
+  document.getElementById("qualityContrast").value = savedQuality.contrast;
+  document.getElementById("qualitySharpness").value = savedQuality.sharpness;
+  scheduleQualityPreview();
 }
 
 async function saveImageQuality() {
-  await fetch(`${API}/config`, {
+  const v = currentQualityValues();
+  await fetch(`${API}/reference/quality`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      image_brightness: parseFloat(document.getElementById("qualityBrightness").value),
-      image_contrast: parseFloat(document.getElementById("qualityContrast").value),
-      image_sharpness: parseFloat(document.getElementById("qualitySharpness").value),
-    }),
+    body: JSON.stringify(v),
   });
-  alert("Saved.");
+  savedQuality = { brightness: v.image_brightness, contrast: v.image_contrast, sharpness: v.image_sharpness };
+  loadReferenceIntoCanvas();
+  loadRotatePreview();
+  loadPerspectivePreview();
+  alert("Saved and baked into the reference image.");
 }
 
 // --- Reference image perspective correction (client-side trace, server-side warp) ---
@@ -801,9 +787,17 @@ async function refreshStatus() {
   await loadModelOptions(cfg.model_file);
   document.getElementById("alignMethod").value = cfg.alignment_method;
   document.getElementById("minMatch").value = cfg.min_match_count;
-  document.getElementById("qualityBrightness").value = cfg.image_brightness || 0;
-  document.getElementById("qualityContrast").value = cfg.image_contrast || 1;
-  document.getElementById("qualitySharpness").value = cfg.image_sharpness || 0;
+  savedQuality = {
+    brightness: cfg.image_brightness || 0,
+    contrast: cfg.image_contrast || 1,
+    sharpness: cfg.image_sharpness || 0,
+  };
+  document.getElementById("qualityBrightness").value = savedQuality.brightness;
+  document.getElementById("qualityContrast").value = savedQuality.contrast;
+  document.getElementById("qualitySharpness").value = savedQuality.sharpness;
+  document.getElementById("qualityBrightnessVal").textContent = savedQuality.brightness;
+  document.getElementById("qualityContrastVal").textContent = savedQuality.contrast.toFixed(1);
+  document.getElementById("qualitySharpnessVal").textContent = savedQuality.sharpness.toFixed(1);
   document.getElementById("espUrl").value = cfg.esp_snapshot_url || "";
   document.getElementById("pollInterval").value = cfg.poll_interval_seconds;
   document.getElementById("autoCaptureEnabled").checked = cfg.auto_capture_enabled !== false;

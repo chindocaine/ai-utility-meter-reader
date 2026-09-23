@@ -58,27 +58,29 @@
   <button onclick="resetRotationPreview()">Reset preview</button>
 
   <h3 style="margin-top:14px;">Image quality (optional)</h3>
-  <p>Boost brightness, contrast and sharpness for a dim or slightly hazy camera. Unlike
-     straighten/perspective above, this isn't baked into the reference image - the same
-     values are applied to the reference and to every captured image right before alignment
-     and digit cropping, so tune them here and they'll apply automatically going forward.
-     The preview below is an approximation to help you pick values.</p>
-  <canvas id="qualityCanvas" style="border:1px solid #ccc; max-width:100%;"></canvas>
+  <p>Boost brightness, contrast and sharpness for a dim or slightly hazy camera. Baked into
+     the reference image (like straighten/perspective above) so it's computed once instead of
+     on every capture - but kept as its own step, from a separate untouched checkpoint, so you
+     can retune and re-save it any time without needing to redo perspective/rotation first.
+     The same values are also applied to every captured image before alignment and digit
+     cropping. The preview below is rendered by the backend itself, so it matches exactly
+     what gets baked in.</p>
+  <img id="qualityPreviewImage" style="max-width:100%; border:1px solid #ccc; display:none;">
   <div>
     <label>Brightness:
-      <input type="range" id="qualityBrightness" min="-100" max="100" step="1" value="0" oninput="drawQualityPreview()">
+      <input type="range" id="qualityBrightness" min="-100" max="100" step="1" value="0" oninput="scheduleQualityPreview()">
       <span id="qualityBrightnessVal">0</span>
     </label><br>
     <label>Contrast:
-      <input type="range" id="qualityContrast" min="0.5" max="3" step="0.1" value="1" oninput="drawQualityPreview()">
+      <input type="range" id="qualityContrast" min="0.5" max="3" step="0.1" value="1" oninput="scheduleQualityPreview()">
       <span id="qualityContrastVal">1.0</span>
     </label><br>
     <label>Sharpness:
-      <input type="range" id="qualitySharpness" min="0" max="3" step="0.1" value="0" oninput="drawQualityPreview()">
+      <input type="range" id="qualitySharpness" min="0" max="3" step="0.1" value="0" oninput="scheduleQualityPreview()">
       <span id="qualitySharpnessVal">0.0</span>
     </label>
   </div>
-  <button onclick="saveImageQuality()">Save</button>
+  <button onclick="saveImageQuality()">Save &amp; bake into reference</button>
   <button onclick="resetImageQualityPreview()">Reset preview</button>
 </section>
 

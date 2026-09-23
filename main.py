@@ -102,7 +102,18 @@ def meter_config_path(meter_id):
 
 
 def reference_path(meter_id):
+    """The final reference image used for alignment - geometry (perspective,
+    rotation) plus brightness/contrast/sharpness baked in. Derived from
+    reference_base_path; see bake_reference_quality."""
     return meter_dir(meter_id) / "reference.jpg"
+
+
+def reference_base_path(meter_id):
+    """The reference image right after upload/rotate/perspective, before
+    brightness/contrast/sharpness is baked in. Kept as its own checkpoint so
+    quality can be retuned and re-baked at any time without needing to redo
+    geometry correction first, and without compounding onto a previous bake."""
+    return meter_dir(meter_id) / "reference_base.jpg"
 
 
 def last_raw_path(meter_id):
@@ -300,9 +311,10 @@ def run_digit_model(crop, model_path: Path, num_classes: int, debug=False):
 
 def adjust_image(img, cfg):
     """Apply this meter's brightness/contrast/sharpness adjustment. Used on
-    both the live capture and the reference image (see process_image) so a
-    meter with a dim or hazy camera can be tuned for readability once, in the
-    setup UI, instead of needing every incoming photo to already be perfect."""
+    every live capture (see process_image) and, once, to bake the same
+    adjustment into the stored reference image (see bake_reference_quality) -
+    so a meter with a dim or hazy camera gets consistent treatment without
+    redoing this work against the reference on every single capture."""
     brightness = cfg.get("image_brightness") or 0
     contrast = cfg.get("image_contrast") or 1.0
     sharpness = cfg.get("image_sharpness") or 0.0
@@ -313,6 +325,32 @@ def adjust_image(img, cfg):
         blurred = cv2.GaussianBlur(img, (0, 0), sigmaX=3)
         img = cv2.addWeighted(img, 1 + sharpness, blurred, -sharpness, 0)
     return img
+
+
+def ensure_reference_base(meter_id):
+    """Make sure reference_base_path exists, migrating older meters that
+    predate this checkpoint: their reference.jpg was always geometry-only
+    (quality used to be applied at capture time only, never persisted), so it
+    doubles as the base."""
+    base_path = reference_base_path(meter_id)
+    if not base_path.exists() and reference_path(meter_id).exists():
+        shutil.copyfile(reference_path(meter_id), base_path)
+
+
+def bake_reference_quality(meter_id, cfg):
+    """(Re)generate the final reference.jpg by applying this meter's current
+    brightness/contrast/sharpness settings to reference_base_path. Always
+    starts fresh from that untouched checkpoint, so retuning quality never
+    compounds onto a previous bake and never requires redoing perspective or
+    rotation first."""
+    ensure_reference_base(meter_id)
+    base_path = reference_base_path(meter_id)
+    if not base_path.exists():
+        return
+    base = cv2.imread(str(base_path))
+    if base is None:
+        return
+    cv2.imwrite(str(reference_path(meter_id)), adjust_image(base, cfg))
 
 
 def align_image(img, reference, method, min_match_count):
@@ -406,9 +444,10 @@ def process_image(img, cfg, ref_path, debug=False, fallback_digits=None):
     if not cfg["model_file"]:
         raise RuntimeError("No tflite model configured yet")
 
+    # ref_path already has brightness/contrast/sharpness baked in (see
+    # bake_reference_quality) - only the live capture needs it applied here.
     reference = cv2.imread(str(ref_path))
     img = adjust_image(img, cfg)
-    reference = adjust_image(reference, cfg)
     aligned, ok = align_image(img, reference, cfg["alignment_method"], cfg["min_match_count"])
     if not ok:
         raise RuntimeError("Image alignment failed (not enough matched features)")
@@ -876,7 +915,8 @@ def api_upload_reference(meter_id):
     if "file" not in request.files:
         return jsonify({"error": "no file uploaded"}), 400
     f = request.files["file"]
-    f.save(str(reference_path(meter_id)))
+    f.save(str(reference_base_path(meter_id)))
+    bake_reference_quality(meter_id, load_meter_config(meter_id))
     return jsonify({"ok": True})
 
 
@@ -897,8 +937,9 @@ def api_reference_from_snapshot(meter_id):
         resp.raise_for_status()
     except Exception as e:
         return jsonify({"error": f"could not fetch snapshot: {e}"}), 400
-    with open(reference_path(meter_id), "wb") as f:
+    with open(reference_base_path(meter_id), "wb") as f:
         f.write(resp.content)
+    bake_reference_quality(meter_id, cfg)
     return jsonify({"ok": True})
 
 
@@ -924,8 +965,9 @@ def api_rotate_reference(meter_id):
     once the reference's own pixel grid has rotated."""
     if not meter_exists(meter_id):
         return jsonify({"error": "no such meter"}), 404
-    ref_path = reference_path(meter_id)
-    if not ref_path.exists():
+    ensure_reference_base(meter_id)
+    base_path = reference_base_path(meter_id)
+    if not base_path.exists():
         return jsonify({"error": "no reference image set"}), 400
 
     body = request.get_json(force=True) or {}
@@ -936,7 +978,7 @@ def api_rotate_reference(meter_id):
     if degrees == 0:
         return jsonify({"error": "degrees must be non-zero"}), 400
 
-    img = cv2.imread(str(ref_path))
+    img = cv2.imread(str(base_path))
     if img is None:
         return jsonify({"error": "could not read reference image"}), 400
 
@@ -951,12 +993,13 @@ def api_rotate_reference(meter_id):
     M[0, 2] += (new_w / 2) - center[0]
     M[1, 2] += (new_h / 2) - center[1]
     rotated = cv2.warpAffine(img, M, (new_w, new_h), borderValue=(255, 255, 255))
-    cv2.imwrite(str(ref_path), rotated)
+    cv2.imwrite(str(base_path), rotated)
 
     cfg = load_meter_config(meter_id)
     cleared_rois = bool(cfg["rois"])
     cfg["rois"] = []
     save_meter_config(meter_id, cfg)
+    bake_reference_quality(meter_id, cfg)
 
     return jsonify({"ok": True, "cleared_rois": cleared_rois})
 
@@ -976,8 +1019,9 @@ def api_perspective_reference(meter_id):
     apply once the reference's pixel grid has changed."""
     if not meter_exists(meter_id):
         return jsonify({"error": "no such meter"}), 404
-    ref_path = reference_path(meter_id)
-    if not ref_path.exists():
+    ensure_reference_base(meter_id)
+    base_path = reference_base_path(meter_id)
+    if not base_path.exists():
         return jsonify({"error": "no reference image set"}), 400
 
     body = request.get_json(force=True) or {}
@@ -990,7 +1034,7 @@ def api_perspective_reference(meter_id):
     except (KeyError, TypeError, ValueError):
         return jsonify({"error": "each corner needs numeric x/y"}), 400
 
-    img = cv2.imread(str(ref_path))
+    img = cv2.imread(str(base_path))
     if img is None:
         return jsonify({"error": "could not read reference image"}), 400
 
@@ -1023,14 +1067,64 @@ def api_perspective_reference(meter_id):
     out_h = int(round(max_y - min_y))
 
     rectified = cv2.warpPerspective(img, H, (out_w, out_h), borderValue=(255, 255, 255))
-    cv2.imwrite(str(ref_path), rectified)
+    cv2.imwrite(str(base_path), rectified)
 
     cfg = load_meter_config(meter_id)
     cleared_rois = bool(cfg["rois"])
     cfg["rois"] = []
     save_meter_config(meter_id, cfg)
+    bake_reference_quality(meter_id, cfg)
 
     return jsonify({"ok": True, "cleared_rois": cleared_rois})
+
+
+@app.route("/api/meters/<meter_id>/reference/quality", methods=["POST"])
+def api_bake_reference_quality(meter_id):
+    """Persist brightness/contrast/sharpness into this meter's config and bake
+    them into the reference image. Always rebuilt from reference_base_path
+    (see bake_reference_quality), so this can be redone any time without
+    needing to retrace perspective or rotation first, and without the bake
+    compounding on a previous one."""
+    if not meter_exists(meter_id):
+        return jsonify({"error": "no such meter"}), 404
+    body = request.get_json(force=True) or {}
+    cfg = load_meter_config(meter_id)
+    for key in ("image_brightness", "image_contrast", "image_sharpness"):
+        if key in body:
+            cfg[key] = body[key]
+    save_meter_config(meter_id, cfg)
+    bake_reference_quality(meter_id, cfg)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/meters/<meter_id>/reference/quality/preview", methods=["POST"])
+def api_reference_quality_preview(meter_id):
+    """Real (backend-computed) preview of applying the given brightness/
+    contrast/sharpness values to this meter's reference image, without saving
+    anything - lets the setup UI show exactly what will be baked in instead of
+    an approximate client-side filter that can visibly diverge from the
+    backend's actual pixel math."""
+    if not meter_exists(meter_id):
+        return jsonify({"error": "no such meter"}), 404
+    ensure_reference_base(meter_id)
+    base_path = reference_base_path(meter_id)
+    if not base_path.exists():
+        return jsonify({"error": "no reference image set"}), 400
+    base = cv2.imread(str(base_path))
+    if base is None:
+        return jsonify({"error": "could not read reference image"}), 400
+
+    body = request.get_json(force=True) or {}
+    preview_cfg = {
+        "image_brightness": body.get("image_brightness", 0),
+        "image_contrast": body.get("image_contrast", 1.0),
+        "image_sharpness": body.get("image_sharpness", 0.0),
+    }
+    preview = adjust_image(base, preview_cfg)
+    ok, buf = cv2.imencode(".jpg", preview)
+    if not ok:
+        return jsonify({"error": "could not encode preview"}), 500
+    return send_file(io.BytesIO(buf.tobytes()), mimetype="image/jpeg")
 
 
 @app.route("/api/models", methods=["GET"])
